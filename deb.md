@@ -1,119 +1,159 @@
-lsblk
-sudo -i
-fdisk --version
+# ============================
+# Debootstrap Debian EFI Install
+# ============================
+
+# ----------------------------
+# Disk Partitioning
+# ----------------------------
+
+
 fdisk /dev/sda
-m
-g	create a new empty GPT partition table
-p	print the partition table
-n	add a new partition
-+1M
-t	change a partition type
-4	BIOS BOOT
-p	print the partition table
+g
 
 n
 +1G
-t	change a partition type
-enter 	Linux File System
-p	print the partition table
+t	c
+1
 
 n
 "enter"
 "enter"
-t
-"enter" Linux File System
-p	print the partition table
 
 w	write table to disk and exit
 
-mkfs.ext4 /dev/sda2
+# ----------------------------
+# Format partitions
+# ----------------------------
+mkfs.ext4 -F /dev/sda2
 mkfs.fat -F 32 /dev/sda1
+
+# ----------------------------
+# Mount partitions
+# ----------------------------
 mount /dev/sda2 /mnt
 mkdir -p /mnt/boot/efi
-sudo mount /dev/sda1 /mnt/boot/efi
+mount /dev/sda1 /mnt/boot/efi
 
-wget 'https://deb.debian.org/debian/pool/main/d/debootstrap/debootstrap_1.0.143_all.deb'
-dpkg -i debootstrap_*.*.*_all.deb
 
+# ----------------------------
+# Bootstrap Debian amd64 stable without variant
+# ----------------------------
 debootstrap --arch amd64 stable /mnt https://deb.debian.org/debian
 
+# ----------------------------
+# Bind essential filesystems for chroot
+# ----------------------------
 mount --make-rslave --rbind /proc /mnt/proc
 mount --make-rslave --rbind /sys /mnt/sys
 mount --make-rslave --rbind /dev /mnt/dev
 mount --make-rslave --rbind /run /mnt/run
 
-chroot /mnt /bin/bash
+# ----------------------------
+# Generate fstab AFTER debootstrap
+# ----------------------------
+echo "UUID=$(blkid -s UUID -o value /dev/sda2) / ext4 errors=remount-ro 0 1" > /mnt/etc/fstab
+echo "UUID=$(blkid -s UUID -o value /dev/sda1) /boot/efi vfat umask=0077 0 1" >> /mnt/etc/fstab
 
-lsblk -f /dev/sda >> /etc/fstab
-nano /etc/fstab
+# ----------------------------
+# Chroot and run setup commands
+# ----------------------------
 
-apt install ca-certificates lsb-release
+# ----------------------------
+# TIMEZONE (Europe/Istanbul)
+# ----------------------------
+ln -fs /usr/share/zoneinfo/Europe/Istanbul /etc/localtime
+dpkg-reconfigure -f noninteractive tzdata
 
-CODENAME=$(lsb_release --codename --short)
-cat > /etc/apt/sources.list << HEREDOC
-deb https://deb.debian.org/debian/ $CODENAME main contrib non-free
-deb-src https://deb.debian.org/debian/ $CODENAME main contrib non-free
+# ----------------------------
+# Update sources.list
+# ----------------------------
 
-deb https://security.debian.org/debian-security $CODENAME-security main contrib non-free
-deb-src https://security.debian.org/debian-security $CODENAME-security main contrib non-free
+echo "deb http://deb.debian.org/debian/ stable main contrib non-free non-free-firmware" > /etc/apt/sources.list
+echo "deb-src http://deb.debian.org/debian/ stable main contrib non-free non-free-firmware" >> /etc/apt/sources.list
 
-deb https://deb.debian.org/debian/ $CODENAME-updates main contrib non-free
-deb-src https://deb.debian.org/debian/ $CODENAME-updates main contrib non-free
-HEREDOC
+echo "deb http://security.debian.org/debian-security stable-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+echo "deb-src http://security.debian.org/debian-security stable-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
 
-nano /etc/apt/sources.list
+echo "deb http://deb.debian.org/debian/ stable-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+echo "deb-src http://deb.debian.org/debian/ stable-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+
+echo "deb http://deb.debian.org/debian/ stable-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+echo "deb-src http://deb.debian.org/debian/ stable-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list
 
 apt update
 
-dpkg-reconfigure tzdata
+# ----------------------------
+# Locales
+# ----------------------------
+apt install -y locales
 
-apt install locales
-dpkg-reconfigure locales
+sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen
+locale-gen 
+update-locale LANG=en_US.UTF-8
+echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-apt search linux-image
-apt install linux-image-amd64
+# ----------------------------
+# Kernel
+# ----------------------------
+apt install -y linux-image-amd64
 
-apt install firmware-linux
+# ----------------------------
+# Firmware
+# ----------------------------
+apt install -y firmware-linux
 
-echo "debian" > /etc/hostname
+# ----------------------------
+# Hostname
+# ----------------------------
+echo 'debian' > /etc/hostname
+sed -i '1a 127.0.1.1\tdebian' /etc/hosts
 
-cat > /etc/hosts << HEREDOC
-127.0.0.1 localhost
-127.0.1.1 $(cat /etc/hostname)
+# ----------------------------
+# Network 
+# ----------------------------
+apt install -y network-manager
 
-# The following lines are desirable for IPv6 capable hosts
-::1     localhost ip6-localhost ip6-loopback
-ff02::1 ip6-allnodes
-ff02::2 ip6-allrouters
-HEREDOC
+# ----------------------------
+# sudo
+# ----------------------------
+apt install -y sudo
 
-apt install network-manager
+# ----------------------------
+# Users
+# ----------------------------
+echo 'root:root' | chpasswd
 
-apt install grub2
-passwd
-
-useradd sk -m -s /bin/bash
-passwd sk
-
-apt install sudo
+useradd -m -s /bin/bash sk
+echo 'sk:sk' | chpasswd
 usermod -aG sudo sk
 
-apt install efibootmgr efivar grub-efi grub-efi-amd64-signed
-
-grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
-grub-mkconfig -o /boot/grub/grub.cfg
+# ----------------------------
+# EFI boot
+# ----------------------------
+apt install -y efibootmgr efivar grub-efi grub-efi-amd64-signed
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB /dev/sda
 update-grub
-
 update-initramfs -u
 
-exit
+# ----------------------------
+# Desktop Env
+# ----------------------------
+# apt install -y lxde 
 
+# ----------------------------
+# Explicit exit from chroot
+# ----------------------------
+exit
+"
+
+# ----------------------------
+# Exit chroot, unmount, reboot
+# ----------------------------
+cd /
 umount -R /mnt
 
 reboot
 
-
-tasksel --list-tasks
 
 
 
